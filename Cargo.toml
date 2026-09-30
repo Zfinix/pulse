@@ -8,5 +8,8 @@ license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
-tokio = { version = "1", features = ["rt", "sync", "macros"] }
+crossterm = "0.29"
+kiln = { path = "../kiln" }
+ratatui = "0.30"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 ureq = "3"

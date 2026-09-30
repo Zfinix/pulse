@@ -1,5 +1,6 @@
 //! The network side. A run happens on a worker thread against Cloudflare's
-//! public speed test and reports each result over a channel.
+//! public speed test and reports every sample over a channel, so the UI never
+//! waits on the network.
 
 use std::io::{self, Read};
 use std::time::{Duration, Instant};
@@ -9,6 +10,8 @@ use ureq::{Agent, SendBody};
 
 use crate::stats;
 
+/// The server every request goes to.
+pub const HOST: &str = "speed.cloudflare.com";
 /// Round trips timed in the latency phase, after one warm-up.
 pub const PINGS: usize = 10;
 
@@ -16,6 +19,7 @@ const DOWN_URL: &str = "https://speed.cloudflare.com/__down";
 const UP_URL: &str = "https://speed.cloudflare.com/__up";
 const TRACE_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
 
+const WINDOW: Duration = Duration::from_millis(250);
 const FIRST_CHUNK: u64 = 100_000;
 const MAX_CHUNK: u64 = 25_000_000;
 const CHUNK_TIME: Duration = Duration::from_secs(1);
@@ -32,12 +36,20 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// The name shown next to the phase's result.
+    /// The name shown in the pane and in scrollback.
     pub fn name(self) -> &'static str {
         match self {
             Phase::Latency => "Latency",
             Phase::Download => "Download",
             Phase::Upload => "Upload",
+        }
+    }
+
+    /// The unit live samples of this phase are in.
+    pub fn unit(self) -> &'static str {
+        match self {
+            Phase::Latency => "ms",
+            Phase::Download | Phase::Upload => "Mbps",
         }
     }
 
@@ -56,6 +68,10 @@ impl Phase {
 pub enum Event {
     /// The Cloudflare data centre answering, e.g. `LHR`.
     Location(String),
+    /// A phase began; samples that follow belong to it.
+    Started(Phase),
+    /// A live reading: milliseconds for latency, Mbps otherwise.
+    Sample(f64),
     /// The latency phase finished: median ping and jitter, in milliseconds.
     Latency { ping_ms: f64, jitter_ms: f64 },
     /// The download phase finished, in Mbps.
@@ -120,10 +136,11 @@ pub fn run(events: UnboundedSender<Event>) {
     }
 
     for phase in [Phase::Latency, Phase::Download, Phase::Upload] {
+        let _ = events.send(Event::Started(phase));
         let outcome = match phase {
-            Phase::Latency => latency(&agent),
-            Phase::Download => download(&agent).map(Event::Download),
-            Phase::Upload => upload(&agent).map(Event::Upload),
+            Phase::Latency => latency(&agent, &events),
+            Phase::Download => download(&agent, &events).map(Event::Download),
+            Phase::Upload => upload(&agent, &events).map(Event::Upload),
         };
         match outcome {
             Ok(event) => {
@@ -138,7 +155,7 @@ pub fn run(events: UnboundedSender<Event>) {
     let _ = events.send(Event::Finished);
 }
 
-fn latency(agent: &Agent) -> Result<Event, ureq::Error> {
+fn latency(agent: &Agent, events: &UnboundedSender<Event>) -> Result<Event, ureq::Error> {
     let deadline = Instant::now() + Phase::Latency.budget();
     let url = format!("{DOWN_URL}?bytes=0");
     agent.get(&url).call()?.body_mut().read_to_vec()?;
@@ -149,6 +166,7 @@ fn latency(agent: &Agent) -> Result<Event, ureq::Error> {
         let ms = start.elapsed().as_secs_f64() * 1000.0;
         response.body_mut().read_to_vec()?;
         pings.push(ms);
+        let _ = events.send(Event::Sample(ms));
     }
     Ok(Event::Latency {
         ping_ms: stats::median(&pings).unwrap_or_default(),
@@ -156,9 +174,9 @@ fn latency(agent: &Agent) -> Result<Event, ureq::Error> {
     })
 }
 
-fn download(agent: &Agent) -> Result<f64, ureq::Error> {
+fn download(agent: &Agent, events: &UnboundedSender<Event>) -> Result<f64, ureq::Error> {
     let deadline = Instant::now() + Phase::Download.budget();
-    let mut meter = Meter::new();
+    let mut meter = Meter::new(events);
     let mut buf = vec![0; READ_BUF];
     let mut chunk = FIRST_CHUNK;
     while Instant::now() < deadline && meter.total < DOWN_CAP {
@@ -181,9 +199,9 @@ fn download(agent: &Agent) -> Result<f64, ureq::Error> {
     Ok(meter.mbps())
 }
 
-fn upload(agent: &Agent) -> Result<f64, ureq::Error> {
+fn upload(agent: &Agent, events: &UnboundedSender<Event>) -> Result<f64, ureq::Error> {
     let deadline = Instant::now() + Phase::Upload.budget();
-    let mut meter = Meter::new();
+    let mut meter = Meter::new(events);
     let mut chunk = FIRST_CHUNK;
     while Instant::now() < deadline && meter.total < UP_CAP {
         let sent = Instant::now();
@@ -211,19 +229,25 @@ fn next_chunk(last: u64, took: Duration, left: u64) -> u64 {
     ((last as f64 * scale) as u64).min(MAX_CHUNK).min(left)
 }
 
-/// Counts bytes moved, and gives a result that leaves out the first request,
-/// which only warms the connection up.
-struct Meter {
+/// Counts bytes moved: one live Mbps sample per [`WINDOW`], and a result that
+/// leaves out the first request, which only warms the connection up.
+struct Meter<'a> {
+    events: &'a UnboundedSender<Event>,
     total: u64,
+    window: u64,
+    window_start: Instant,
     counted: u64,
     counting_since: Option<Instant>,
     started: Instant,
 }
 
-impl Meter {
-    fn new() -> Self {
+impl<'a> Meter<'a> {
+    fn new(events: &'a UnboundedSender<Event>) -> Self {
         Self {
+            events,
             total: 0,
+            window: 0,
+            window_start: Instant::now(),
             counted: 0,
             counting_since: None,
             started: Instant::now(),
@@ -232,9 +256,19 @@ impl Meter {
 
     fn add(&mut self, bytes: u64) {
         self.total += bytes;
+        self.window += bytes;
         if self.counting_since.is_some() {
             self.counted += bytes;
         }
+        let elapsed = self.window_start.elapsed();
+        if elapsed < WINDOW {
+            return;
+        }
+        let _ = self
+            .events
+            .send(Event::Sample(stats::mbps(self.window, elapsed)));
+        self.window = 0;
+        self.window_start = Instant::now();
     }
 
     fn warmed(&mut self) {
@@ -250,12 +284,12 @@ impl Meter {
 }
 
 /// An upload body of `left` filler bytes that counts itself as it is sent.
-struct Payload<'m> {
+struct Payload<'m, 'a> {
     left: u64,
-    meter: &'m mut Meter,
+    meter: &'m mut Meter<'a>,
 }
 
-impl Read for Payload<'_> {
+impl Read for Payload<'_, '_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let n = buf
             .len()
