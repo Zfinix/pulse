@@ -17,6 +17,7 @@ use kiln::cells;
 use kiln::guard::TuiGuard;
 use kiln::render::Renderable;
 use kiln::terminal::{Tui, TuiEvent, restore_raw};
+use kiln::theme;
 
 use measure::{Event, Failure, Phase};
 use stats::Summary;
@@ -27,8 +28,21 @@ const USAGE: &str = "pulse: internet speed in your terminal
 Usage: pulse [options]
 
 Options:
+  --no-download    skip the download test
+  --no-upload      skip the upload test
+  --json           print one JSON object and nothing else
+  -q, --quiet      print only the summary line
+  --theme <name>   colours for the live pane (default ocean, or PULSE_THEME)
+  --themes         list the themes
   -h, --help       show this help
   -V, --version    show the version";
+
+/// Where the result goes.
+enum Output {
+    Live,
+    Quiet,
+    Json,
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -42,8 +56,33 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<ExitCode> {
-    if let Some(arg) = std::env::args().nth(1) {
+    let mut theme_name = std::env::var("PULSE_THEME").unwrap_or_else(|_| "ocean".into());
+    let mut output = Output::Live;
+    let mut phases = vec![Phase::Latency, Phase::Download, Phase::Upload];
+    let names = || {
+        theme::all()
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>()
+    };
+
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--no-download" => phases.retain(|phase| *phase != Phase::Download),
+            "--no-upload" => phases.retain(|phase| *phase != Phase::Upload),
+            "--json" => output = Output::Json,
+            "-q" | "--quiet" => output = Output::Quiet,
+            "--theme" => {
+                let Some(name) = args.next() else {
+                    bail!("--theme needs a name, try one of: {}", names().join(", "));
+                };
+                theme_name = name;
+            }
+            "--themes" => {
+                println!("{}", names().join("\n"));
+                return Ok(ExitCode::SUCCESS);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(ExitCode::SUCCESS);
@@ -56,10 +95,19 @@ async fn run() -> Result<ExitCode> {
         }
     }
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    std::thread::spawn(move || measure::run(tx));
+    let Some(entry) = theme::named(&theme_name) else {
+        bail!(
+            "there is no theme called {theme_name}, try one of: {}",
+            names().join(", ")
+        );
+    };
+    theme::set(entry.theme);
+    theme::settle();
 
-    if std::io::stdout().is_terminal() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    std::thread::spawn(move || measure::run(&phases, tx));
+
+    if matches!(output, Output::Live) && std::io::stdout().is_terminal() {
         return live(rx).await;
     }
     let mut summary = Summary::default();
@@ -79,7 +127,10 @@ async fn run() -> Result<ExitCode> {
             | Event::Upload(_) => {}
         }
     }
-    println!("{}", summary.line());
+    match output {
+        Output::Json => println!("{}", summary.json()),
+        Output::Live | Output::Quiet => println!("{}", summary.line()),
+    }
     Ok(ExitCode::SUCCESS)
 }
 

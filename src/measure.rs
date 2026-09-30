@@ -111,9 +111,9 @@ impl From<ureq::Error> for Failure {
     }
 }
 
-/// Run every phase in order, then send [`Event::Finished`], or
-/// [`Event::Failed`] at the first error. Blocks, so call it from its own thread.
-pub fn run(events: UnboundedSender<Event>) {
+/// Run `phases` in order, then send [`Event::Finished`], or [`Event::Failed`]
+/// at the first error. Blocks, so call it from its own thread.
+pub fn run(phases: &[Phase], events: UnboundedSender<Event>) {
     let agent: Agent = Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(5)))
         .timeout_recv_response(Some(Duration::from_secs(10)))
@@ -135,7 +135,7 @@ pub fn run(events: UnboundedSender<Event>) {
         let _ = events.send(Event::Location(colo));
     }
 
-    for phase in [Phase::Latency, Phase::Download, Phase::Upload] {
+    for &phase in phases {
         let _ = events.send(Event::Started(phase));
         let outcome = match phase {
             Phase::Latency => latency(&agent, &events),

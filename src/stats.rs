@@ -1,5 +1,5 @@
 //! The arithmetic behind a result: medians, jitter, megabits per second, and
-//! the summary line a run ends on.
+//! the summary a run ends on, as a line for people and as JSON for scripts.
 
 use std::time::Duration;
 
@@ -47,7 +47,7 @@ pub fn number(value: f64) -> String {
     }
 }
 
-/// What a finished run measured.
+/// What a finished run measured. A phase that was skipped stays `None`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Summary {
     pub download_mbps: Option<f64>,
@@ -78,6 +78,23 @@ impl Summary {
             Some(colo) => format!("{line}  ·  {colo}"),
             None => line,
         }
+    }
+
+    /// One JSON object; missing readings are `null`.
+    pub fn json(&self) -> String {
+        let field = |value: Option<f64>| match value {
+            Some(v) => format!("{v:.2}"),
+            None => "null".to_string(),
+        };
+        let colo = match &self.colo {
+            Some(colo) => format!("\"{}\"", colo.replace(['"', '\\'], "")),
+            None => "null".to_string(),
+        };
+        let (down, up) = (field(self.download_mbps), field(self.upload_mbps));
+        let (ping, jitter) = (field(self.ping_ms), field(self.jitter_ms));
+        format!(
+            "{{\"download_mbps\":{down},\"upload_mbps\":{up},\"ping_ms\":{ping},\"jitter_ms\":{jitter},\"colo\":{colo}}}"
+        )
     }
 }
 

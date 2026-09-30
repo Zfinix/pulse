@@ -75,3 +75,19 @@ fn summary_line_skips_missing() {
     };
     assert_eq!(summary.line(), "↓ 312 Mbps  ping 12 ms  jitter 3.4 ms");
 }
+
+#[test]
+fn summary_json_full() {
+    assert_eq!(
+        full().json(),
+        r#"{"download_mbps":312.40,"upload_mbps":48.20,"ping_ms":12.00,"jitter_ms":3.40,"colo":"LHR"}"#
+    );
+}
+
+#[test]
+fn summary_json_nulls() {
+    assert_eq!(
+        Summary::default().json(),
+        r#"{"download_mbps":null,"upload_mbps":null,"ping_ms":null,"jitter_ms":null,"colo":null}"#
+    );
+}
