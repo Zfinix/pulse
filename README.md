@@ -2,7 +2,7 @@
 
 Internet speed in your terminal.
 
-![pulse measuring download speed: a large 11 Mbps readout, a sparkline of recent samples, and a progress bar at 7s of 8s](assets/demo.png)
+![pulse measuring download speed: a large 11 Mbps readout, a sparkline of recent samples, and a progress bar at 7s of 8s](assets/demo.gif)
 
 pulse checks your ping, download, and upload against Cloudflare's public speed
 test. No account, no API key. The live readout stays in a small pane at the
