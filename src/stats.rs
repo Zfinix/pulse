@@ -51,16 +51,21 @@ pub fn number(value: f64) -> String {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Summary {
     pub download_mbps: Option<f64>,
+    pub upload_mbps: Option<f64>,
     pub ping_ms: Option<f64>,
     pub jitter_ms: Option<f64>,
+    pub colo: Option<String>,
 }
 
 impl Summary {
-    /// `↓ 312 Mbps  ping 12 ms  jitter 3 ms`.
+    /// `↓ 312 Mbps  ↑ 48 Mbps  ping 12 ms  jitter 3 ms  ·  LHR`.
     pub fn line(&self) -> String {
         let mut parts = Vec::new();
         if let Some(down) = self.download_mbps {
             parts.push(format!("↓ {} Mbps", number(down)));
+        }
+        if let Some(up) = self.upload_mbps {
+            parts.push(format!("↑ {} Mbps", number(up)));
         }
         if let Some(ping) = self.ping_ms {
             parts.push(format!("ping {} ms", number(ping)));
@@ -68,7 +73,11 @@ impl Summary {
         if let Some(jitter) = self.jitter_ms {
             parts.push(format!("jitter {} ms", number(jitter)));
         }
-        parts.join("  ")
+        let line = parts.join("  ");
+        match &self.colo {
+            Some(colo) => format!("{line}  ·  {colo}"),
+            None => line,
+        }
     }
 }
 

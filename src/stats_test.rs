@@ -51,21 +51,27 @@ fn number_scales_precision() {
 fn full() -> Summary {
     Summary {
         download_mbps: Some(312.4),
+        upload_mbps: Some(48.2),
         ping_ms: Some(12.0),
         jitter_ms: Some(3.4),
+        colo: Some("LHR".into()),
     }
 }
 
 #[test]
 fn summary_line_full() {
-    assert_eq!(full().line(), "↓ 312 Mbps  ping 12 ms  jitter 3.4 ms");
+    assert_eq!(
+        full().line(),
+        "↓ 312 Mbps  ↑ 48 Mbps  ping 12 ms  jitter 3.4 ms  ·  LHR"
+    );
 }
 
 #[test]
 fn summary_line_skips_missing() {
     let summary = Summary {
-        download_mbps: None,
+        upload_mbps: None,
+        colo: None,
         ..full()
     };
-    assert_eq!(summary.line(), "ping 12 ms  jitter 3.4 ms");
+    assert_eq!(summary.line(), "↓ 312 Mbps  ping 12 ms  jitter 3.4 ms");
 }

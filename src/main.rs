@@ -50,15 +50,21 @@ async fn run() -> Result<ExitCode> {
     std::thread::spawn(move || measure::run(tx));
 
     let mut summary = Summary::default();
-    let (latency, download) = (Phase::Latency.name(), Phase::Download.name());
+    let (latency, download, upload) = (
+        Phase::Latency.name(),
+        Phase::Download.name(),
+        Phase::Upload.name(),
+    );
     while let Some(event) = rx.recv().await {
         record(&mut summary, &event);
         match event {
+            Event::Location(_) => {}
             Event::Latency { ping_ms, jitter_ms } => {
                 let (ping, jitter) = (stats::number(ping_ms), stats::number(jitter_ms));
                 println!("{latency:<10}ping {ping} ms, jitter {jitter} ms");
             }
             Event::Download(mbps) => println!("{download:<10}{} Mbps", stats::number(mbps)),
+            Event::Upload(mbps) => println!("{upload:<10}{} Mbps", stats::number(mbps)),
             Event::Failed(Failure { message, detail }) => {
                 eprintln!("{message}\n{detail}");
                 return Ok(ExitCode::FAILURE);
@@ -72,11 +78,13 @@ async fn run() -> Result<ExitCode> {
 
 fn record(summary: &mut Summary, event: &Event) {
     match event {
+        Event::Location(colo) => summary.colo = Some(colo.clone()),
         Event::Latency { ping_ms, jitter_ms } => {
             summary.ping_ms = Some(*ping_ms);
             summary.jitter_ms = Some(*jitter_ms);
         }
         Event::Download(mbps) => summary.download_mbps = Some(*mbps),
+        Event::Upload(mbps) => summary.upload_mbps = Some(*mbps),
         Event::Failed(_) | Event::Finished => {}
     }
 }

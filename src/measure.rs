@@ -1,11 +1,11 @@
 //! The network side. A run happens on a worker thread against Cloudflare's
 //! public speed test and reports each result over a channel.
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::UnboundedSender;
-use ureq::Agent;
+use ureq::{Agent, SendBody};
 
 use crate::stats;
 
@@ -13,11 +13,14 @@ use crate::stats;
 pub const PINGS: usize = 10;
 
 const DOWN_URL: &str = "https://speed.cloudflare.com/__down";
+const UP_URL: &str = "https://speed.cloudflare.com/__up";
+const TRACE_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
 
 const FIRST_CHUNK: u64 = 100_000;
 const MAX_CHUNK: u64 = 25_000_000;
 const CHUNK_TIME: Duration = Duration::from_secs(1);
 const DOWN_CAP: u64 = 150_000_000;
+const UP_CAP: u64 = 50_000_000;
 const READ_BUF: usize = 64 * 1024;
 
 /// One stage of a run, in the order they happen.
@@ -25,6 +28,7 @@ const READ_BUF: usize = 64 * 1024;
 pub enum Phase {
     Latency,
     Download,
+    Upload,
 }
 
 impl Phase {
@@ -33,6 +37,7 @@ impl Phase {
         match self {
             Phase::Latency => "Latency",
             Phase::Download => "Download",
+            Phase::Upload => "Upload",
         }
     }
 
@@ -41,6 +46,7 @@ impl Phase {
         match self {
             Phase::Latency => Duration::from_secs(5),
             Phase::Download => Duration::from_secs(8),
+            Phase::Upload => Duration::from_secs(6),
         }
     }
 }
@@ -48,10 +54,14 @@ impl Phase {
 /// Something the worker wants the UI to know.
 #[derive(Debug)]
 pub enum Event {
+    /// The Cloudflare data centre answering, e.g. `LHR`.
+    Location(String),
     /// The latency phase finished: median ping and jitter, in milliseconds.
     Latency { ping_ms: f64, jitter_ms: f64 },
     /// The download phase finished, in Mbps.
     Download(f64),
+    /// The upload phase finished, in Mbps.
+    Upload(f64),
     /// A request failed and the run stopped.
     Failed(Failure),
     /// Every phase finished.
@@ -95,10 +105,25 @@ pub fn run(events: UnboundedSender<Event>) {
         .build()
         .new_agent();
 
-    for phase in [Phase::Latency, Phase::Download] {
+    let trace = agent
+        .get(TRACE_URL)
+        .config()
+        .timeout_global(Some(Duration::from_secs(3)))
+        .build()
+        .call()
+        .and_then(|mut response| response.body_mut().read_to_string());
+    if let Some(colo) = trace.ok().and_then(|body| {
+        body.lines()
+            .find_map(|l| l.strip_prefix("colo=").map(str::to_string))
+    }) {
+        let _ = events.send(Event::Location(colo));
+    }
+
+    for phase in [Phase::Latency, Phase::Download, Phase::Upload] {
         let outcome = match phase {
             Phase::Latency => latency(&agent),
             Phase::Download => download(&agent).map(Event::Download),
+            Phase::Upload => upload(&agent).map(Event::Upload),
         };
         match outcome {
             Ok(event) => {
@@ -156,6 +181,29 @@ fn download(agent: &Agent) -> Result<f64, ureq::Error> {
     Ok(meter.mbps())
 }
 
+fn upload(agent: &Agent) -> Result<f64, ureq::Error> {
+    let deadline = Instant::now() + Phase::Upload.budget();
+    let mut meter = Meter::new();
+    let mut chunk = FIRST_CHUNK;
+    while Instant::now() < deadline && meter.total < UP_CAP {
+        let sent = Instant::now();
+        let mut payload = Payload {
+            left: chunk,
+            meter: &mut meter,
+        };
+        agent
+            .post(UP_URL)
+            .header("content-type", "application/octet-stream")
+            .header("content-length", chunk)
+            .send(SendBody::from_reader(&mut payload))?
+            .body_mut()
+            .read_to_vec()?;
+        meter.warmed();
+        chunk = next_chunk(chunk, sent.elapsed(), UP_CAP.saturating_sub(meter.total));
+    }
+    Ok(meter.mbps())
+}
+
 /// Scale the last request toward [`CHUNK_TIME`], at most 4x, never smaller,
 /// so fast links get big requests and slow ones never overrun the budget much.
 fn next_chunk(last: u64, took: Duration, left: u64) -> u64 {
@@ -198,5 +246,23 @@ impl Meter {
             Some(since) if self.counted > 0 => stats::mbps(self.counted, since.elapsed()),
             _ => stats::mbps(self.total, self.started.elapsed()),
         }
+    }
+}
+
+/// An upload body of `left` filler bytes that counts itself as it is sent.
+struct Payload<'m> {
+    left: u64,
+    meter: &'m mut Meter,
+}
+
+impl Read for Payload<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = buf
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        buf[..n].fill(b'0');
+        self.left -= n as u64;
+        self.meter.add(n as u64);
+        Ok(n)
     }
 }
