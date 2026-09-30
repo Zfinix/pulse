@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "Internet speed in your terminal."
 license = "Apache-2.0"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
