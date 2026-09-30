@@ -5,12 +5,13 @@ edition = "2024"
 rust-version = "1.88"
 description = "Internet speed in your terminal."
 license = "Apache-2.0"
+repository = "https://github.com/Zfinix/pulse"
 readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
 crossterm = "0.29"
-kiln = { path = "../kiln" }
+kiln = { git = "https://github.com/Zfinix/kiln", tag = "v0.2.0" }
 ratatui = "0.30"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 ureq = "3"

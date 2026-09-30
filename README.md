@@ -11,15 +11,12 @@ finishes.
 
 ## Install
 
-pulse is built on [kiln](https://github.com/Zfinix/kiln) and expects a kiln
-checkout in the folder next to it (`../kiln`). With both in place, run this
-from the pulse folder:
-
 ```sh
-cargo install --path .
+cargo install --git https://github.com/Zfinix/pulse
 ```
 
-You need Rust 1.88 or newer.
+You need Rust 1.88 or newer. pulse is built on
+[kiln](https://github.com/Zfinix/kiln), which Cargo fetches for you.
 
 ## Usage
 

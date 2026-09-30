@@ -617,6 +617,7 @@ dependencies = [
 [[package]]
 name = "kiln"
 version = "0.2.0"
+source = "git+https://github.com/Zfinix/kiln?tag=v0.2.0#8f07605ddfe54424d4fb7314b9ebb42c69add074"
 dependencies = [
  "anyhow",
  "crossterm",
